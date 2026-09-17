@@ -90,6 +90,8 @@ def _load_canvas_module():
         "utils.converters",
         move_rect_on_pixel_grid=MagicMock(),
         snap_rect=MagicMock(),
+        dimension_rect_to_extent_rect=MagicMock(),
+        extent_rect_to_dimension_rect=MagicMock()
     )
     scale = _module(
         "utils.scale",

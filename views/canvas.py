@@ -8,7 +8,8 @@ from PyQt5.QtGui import (QPainter, QColor, QKeyEvent, QMouseEvent, QWheelEvent,
 from typing import Optional
 
 from colors import Colors
-from utils.converters import move_rect_on_pixel_grid, snap_rect
+from utils.converters import (move_rect_on_pixel_grid, snap_rect, 
+                              dimension_rect_to_extent_rect, extent_rect_to_dimension_rect)
 from utils.scale import scaled, scaled_font, bar_height
 
 
@@ -22,6 +23,9 @@ _SCROLL_SPEED    = 0.5  # multiplier for mouse wheel vertical scroll
 # ROI size limits in image pixels. Width, height, and area are validated separately.
 _MIN_ROI_SIDE = 2
 _MIN_ROI_AREA = 24
+
+# Crop selection size limit
+_MIN_CROP_SIDE = 10
 
 
 class CanvasContainer(QWidget):
@@ -654,32 +658,37 @@ class CanvasContainer(QWidget):
             dx, dy = img_x - start_x, img_y - start_y
             r = list(self._drag_start_rect)
 
-            if   self.interaction_mode == self.MODE_MOVE:
+            if self.interaction_mode == self.MODE_MOVE:
                 self.rois[self.selected_roi_index] = move_rect_on_pixel_grid(
                     r, dx, dy,
                     bounds=(self.canvas.width(), self.canvas.height()),
                 )
                 self.update()
                 return
-            elif self.interaction_mode == self.MODE_RESIZE_BR:
-                r[2] += dx; r[3] += dy
-            elif self.interaction_mode == self.MODE_RESIZE_TL:
-                r[0] += dx; r[1] += dy; r[2] -= dx; r[3] -= dy
-            elif self.interaction_mode == self.MODE_RESIZE_TR:
-                r[1] += dy; r[2] += dx; r[3] -= dy
-            elif self.interaction_mode == self.MODE_RESIZE_BL:
-                r[0] += dx; r[2] -= dx; r[3] += dy
-            elif self.interaction_mode == self.MODE_RESIZE_T:
-                r[1] += dy; r[3] -= dy
-            elif self.interaction_mode == self.MODE_RESIZE_B:
-                r[3] += dy
-            elif self.interaction_mode == self.MODE_RESIZE_L:
-                r[0] += dx; r[2] -= dx
-            elif self.interaction_mode == self.MODE_RESIZE_R:
-                r[2] += dx
 
-            r[2] = max(_MIN_ROI_SIDE, r[2]); r[3] = max(_MIN_ROI_SIDE, r[3])
-            self.rois[self.selected_roi_index] = tuple(r)
+            re = list(dimension_rect_to_extent_rect(r))
+            if   self.interaction_mode == self.MODE_RESIZE_BR:
+                re[3] = max(re[1] + _MIN_ROI_SIDE, re[3] + dy)
+                re[2] = max(re[0] + _MIN_ROI_SIDE, re[2] + dx)
+            elif self.interaction_mode == self.MODE_RESIZE_TL:
+                re[1] = min(re[3] - _MIN_ROI_SIDE, re[1] + dy)
+                re[0] = min(re[2] - _MIN_ROI_SIDE, re[0] + dx)
+            elif self.interaction_mode == self.MODE_RESIZE_TR:
+                re[1] = min(re[3] - _MIN_ROI_SIDE, re[1] + dy)
+                re[2] = max(re[0] + _MIN_ROI_SIDE, re[2] + dx)
+            elif self.interaction_mode == self.MODE_RESIZE_BL:
+                re[3] = max(re[1] + _MIN_ROI_SIDE, re[3] + dy)
+                re[0] = min(re[2] - _MIN_ROI_SIDE, re[0] + dx)
+            elif self.interaction_mode == self.MODE_RESIZE_T:
+                re[1] = min(re[3] - _MIN_ROI_SIDE, re[1] + dy)
+            elif self.interaction_mode == self.MODE_RESIZE_B:
+                re[3] = max(re[1] + _MIN_ROI_SIDE, re[3] + dy)
+            elif self.interaction_mode == self.MODE_RESIZE_L:
+                re[0] = min(re[2] - _MIN_ROI_SIDE, re[0] + dx)
+            elif self.interaction_mode == self.MODE_RESIZE_R:
+                re[2] = max(re[0] + _MIN_ROI_SIDE, re[2] + dx)
+
+            self.rois[self.selected_roi_index] = extent_rect_to_dimension_rect(re)
             self.update()
             return
 
@@ -691,31 +700,38 @@ class CanvasContainer(QWidget):
                 iw, ih = float(self.canvas.width()), float(self.canvas.height())
                 x, y, w, h = r.x(), r.y(), r.width(), r.height()
 
-                if   self.interaction_mode == self.MODE_MOVE:
-                    x += dx; y += dy
-                elif self.interaction_mode == self.MODE_RESIZE_TL:
-                    x += dx; y += dy; w -= dx; h -= dy
-                elif self.interaction_mode == self.MODE_RESIZE_TR:
-                    y += dy; w += dx; h -= dy
-                elif self.interaction_mode == self.MODE_RESIZE_BL:
-                    x += dx; w -= dx; h += dy
-                elif self.interaction_mode == self.MODE_RESIZE_BR:
-                    w += dx; h += dy
-                elif self.interaction_mode == self.MODE_RESIZE_T:
-                    y += dy; h -= dy
-                elif self.interaction_mode == self.MODE_RESIZE_B:
-                    h += dy
-                elif self.interaction_mode == self.MODE_RESIZE_L:
-                    x += dx; w -= dx
-                elif self.interaction_mode == self.MODE_RESIZE_R:
-                    w += dx
+                if self.interaction_mode == self.MODE_MOVE:
+                    x = max(0.0, min(x + dx, iw - w))
+                    y = max(0.0, min(y + dy, ih - h))
 
-                # clamp to image bounds with minimum size
-                x = max(0.0, min(x, iw - 10))
-                y = max(0.0, min(y, ih - 10))
-                w = max(10.0, min(w, iw - x))
-                h = max(10.0, min(h, ih - y))
-                self.crop_rect = QRectF(x, y, w, h)
+                    self.crop_rect = QRectF(x, y, w, h)
+                    self.last_mouse_pos = event.pos()
+                    self.update()
+                    return
+                
+                re = list(dimension_rect_to_extent_rect((r.x(), r.y(), r.width(), r.height())))
+                if   self.interaction_mode == self.MODE_RESIZE_BR:
+                    re[3] = min(ih, max(re[1] + _MIN_CROP_SIDE, re[3] + dy))
+                    re[2] = min(iw, max(re[0] + _MIN_CROP_SIDE, re[2] + dx))
+                elif self.interaction_mode == self.MODE_RESIZE_TL:
+                    re[1] = max( 0, min(re[3] - _MIN_CROP_SIDE, re[1] + dy))
+                    re[0] = max( 0, min(re[2] - _MIN_CROP_SIDE, re[0] + dx))
+                elif self.interaction_mode == self.MODE_RESIZE_TR:
+                    re[1] = max( 0, min(re[3] - _MIN_CROP_SIDE, re[1] + dy))
+                    re[2] = min(iw, max(re[0] + _MIN_CROP_SIDE, re[2] + dx))
+                elif self.interaction_mode == self.MODE_RESIZE_BL:
+                    re[3] = min(ih, max(re[1] + _MIN_CROP_SIDE, re[3] + dy))
+                    re[0] = max( 0, min(re[2] - _MIN_CROP_SIDE, re[0] + dx))
+                elif self.interaction_mode == self.MODE_RESIZE_T:
+                    re[1] = max( 0, min(re[3] - _MIN_CROP_SIDE, re[1] + dy))
+                elif self.interaction_mode == self.MODE_RESIZE_B:
+                    re[3] = min(ih, max(re[1] + _MIN_CROP_SIDE, re[3] + dy))
+                elif self.interaction_mode == self.MODE_RESIZE_L:
+                    re[0] = max( 0, min(re[2] - _MIN_CROP_SIDE, re[0] + dx))
+                elif self.interaction_mode == self.MODE_RESIZE_R:
+                    re[2] = min(iw, max(re[0] + _MIN_CROP_SIDE, re[2] + dx))
+
+                self.crop_rect = QRectF(*extent_rect_to_dimension_rect(re))
                 self.last_mouse_pos = event.pos()
                 self.update()
             return

@@ -52,3 +52,13 @@ def move_rect_on_pixel_grid(rect, dx, dy, bounds=None):
         x = min(max(0.0, x), max_x)
         y = min(max(0.0, y), max_y)
     return x, y, w, h
+
+def dimension_rect_to_extent_rect(rect):
+    """Convert a dimension based rectangle (left, top, width, height) to extent based (left, top, right, bottom)"""
+    x, y, w, h = map(float, rect)
+    return x, y, x + w, y + h
+
+def extent_rect_to_dimension_rect(rect):
+    """Convert an extent based rectangle (left, top, right, bottom) to dimension based (left, top, width, height)"""
+    l, t, r, b = map(float, rect)
+    return l, t, r - l, b - t
