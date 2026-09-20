@@ -656,13 +656,10 @@ def export_fits(view, model, rois_data, color_names, output_path=None):
                 hdr['EXTNAME']  = f"{group['name'].upper()} {eye.upper()}"
                 hdr['IMAGEREF'] = scene_id
 
-                # Mastcam-Z follows the compact legacy MERSpect/ASDF mask
-                # header. Preserve ROIStudio's existing richer metadata for
-                # other instruments, including Pancam.
                 if not is_zcam:
                     hdr['ROIINDEX'] = class_index
-                    for key, value in group['metadata'].items():
-                        hdr[key] = value
+                for key, value in group['metadata'].items():
+                    hdr[key] = value
 
                 if first:
                     for key, value in scene_metadata.items():

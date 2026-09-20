@@ -343,9 +343,12 @@ class SingleEyeFitsTests(unittest.TestCase):
         self.assertEqual([h.header["NAME"] for h in written["hdus"]],
                          ["red", "blue", "green", "blue"])
         for hdu in written["hdus"]:
+            expected_metadata = rois[0]['metadata'] if hdu.header['NAME'] == 'red' else {}
             self.assertEqual(set(hdu.header), {
                 "NAME", "EYE", "SOURCEFN", "EXTNAME", "IMAGEREF",
-            })
+            } | set(expected_metadata))
+            for key, value in expected_metadata.items():
+                self.assertEqual(hdu.header[key], value)
             self.assertEqual(hdu.header["SOURCEFN"], "ROIStudio")
             self.assertEqual(hdu.header["IMAGEREF"], "scene")
         # Both red rectangles are one selection class and share one union mask.
@@ -653,6 +656,38 @@ class SensorFrameFitsTests(unittest.TestCase):
         )
         self.view.show_status_message.assert_called_once_with(
             "Loaded 3 ROI(s) from sensor.fits"
+        )
+
+    def test_zcam_round_trip_preserves_metadata_for_each_class_and_eye(self):
+        red_metadata = {
+            'FEATURE': 'rock', 'FORMATION': 'Maaz', 'MEMBER': 'Chal',
+            'FEATURE_SUBTYPE': 'abraded surface', 'DESCRIPTION': 'Red target',
+        }
+        blue_metadata = {'FEATURE': 'soil', 'DISTANCE': 'farfield'}
+        self.export([
+            {'left_rect': (0, 0, 2, 3), 'metadata': red_metadata},
+            {'right_rect': (1, 2, 3, 4), 'metadata': red_metadata},
+            {'left_rect': (8, 6, 2, 2), 'right_rect': (7, 5, 2, 2),
+             'metadata': blue_metadata},
+        ], ['red', 'red', 'blue'])
+
+        expected = {'red': red_metadata, 'blue': blue_metadata}
+        self.assertEqual(len(self.hdus), 4)
+        for hdu in self.hdus:
+            for key, value in expected[hdu.header['NAME']].items():
+                self.assertEqual(hdu.header.get(key), value)
+
+        fields = [SimpleNamespace(key=key) for key in red_metadata.keys() | blue_metadata.keys()]
+        with patch.object(sys.modules['views.panels.roi_metadata'],
+                          'metadata_fields', return_value=fields):
+            rois, _, names = self.load()
+
+        self.assertEqual(len(rois), 4)
+        for roi, name in zip(rois, names):
+            self.assertEqual(roi['metadata'], expected[name])
+        self.assertEqual(
+            {(name, roi['left_rect'] is not None) for roi, name in zip(rois, names)},
+            {('red', True), ('red', False), ('blue', True), ('blue', False)},
         )
 
     def test_legacy_masks_keep_scene_coordinates_for_both_eyes(self):
