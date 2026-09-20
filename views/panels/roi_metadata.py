@@ -16,7 +16,7 @@ from typing import Callable, Optional, Tuple, Dict
 from PyQt5.QtCore import Qt, QEvent, pyqtSignal
 from PyQt5.QtGui import QBrush, QColor
 from PyQt5.QtWidgets import (QWidget, QFrame, QVBoxLayout, QHBoxLayout, QLabel,
-                             QComboBox, QLineEdit, QScrollArea, QSizePolicy)
+                             QComboBox, QLineEdit, QScrollArea, QSizePolicy, QMenu)
 
 from colors import Colors
 from utils.paths import _resource_path
@@ -195,6 +195,8 @@ class _MetadataCard(QFrame):
 
     activated = pyqtSignal(int)
     changed   = pyqtSignal(int, dict)
+    set_for_all_requested = pyqtSignal(str, str)
+    set_group_for_all_requested = pyqtSignal(dict)
 
     def __init__(self, index, color, name, metadata, schema,
                  eye_coverage='both', parent=None):
@@ -210,6 +212,8 @@ class _MetadataCard(QFrame):
         self._rows     = {}   # field key -> row container widget
 
         self.setObjectName('card')
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._show_group_menu)
         self._build_ui()
         self._sync_schema()
         self._apply_scale()
@@ -249,6 +253,10 @@ class _MetadataCard(QFrame):
                 editor = _NoWheelComboBox()
                 self._populate_combo(editor, field)
                 editor.currentIndexChanged.connect(partial(self._on_combo_changed, field.key))
+                editor.setContextMenuPolicy(Qt.CustomContextMenu)
+                editor.customContextMenuRequested.connect(
+                    partial(self._show_field_menu, field.key)
+                )
             else:
                 editor = QLineEdit()
                 editor.setText(self._metadata.get(field.key, ''))
@@ -281,6 +289,57 @@ class _MetadataCard(QFrame):
     # ------------------------------------------------------------------
     # Field changes
     # ------------------------------------------------------------------
+
+    def _show_group_menu(self, position):
+        menu = QMenu(self)
+        set_for_all = menu.addAction("set for all")
+        selected = menu.exec_(self.mapToGlobal(position))
+        menu.deleteLater()
+        if selected == set_for_all:
+            values = {
+                key: editor.currentData()
+                for key, editor in self._editors.items()
+                if isinstance(editor, QComboBox)
+            }
+            self.set_group_for_all_requested.emit(values)
+
+    def set_dropdown_values(self, values):
+        """Copy a complete dropdown state before reconciling dependent fields."""
+        previous = dict(self._metadata)
+        for field in self._schema:
+            if not field.options:
+                continue
+            value = values.get(field.key, _UNSET)
+            if value:
+                self._metadata[field.key] = value
+            else:
+                self._metadata.pop(field.key, None)
+
+        self._sync_schema()
+        for field in self._schema:
+            if field.options:
+                self._populate_combo(self._editors[field.key], field)
+        if self._metadata != previous:
+            self.changed.emit(self.index, dict(self._metadata))
+
+    def _show_field_menu(self, key, position):
+        editor = self._editors[key]
+        menu = QMenu(editor)
+        set_for_all = menu.addAction("set for all")
+        selected = menu.exec_(editor.mapToGlobal(position))
+        menu.deleteLater()
+        if selected == set_for_all:
+            self.set_for_all_requested.emit(key, editor.currentData())
+
+    def set_field_value(self, key, value):
+        """Apply a shared dropdown value only when valid for this card."""
+        field = next(field for field in self._schema if field.key == key)
+        if field.visible_when is not None and not field.visible_when(self._metadata):
+            return
+        editor = self._editors[key]
+        index = editor.findData(value)
+        if index >= 0:
+            editor.setCurrentIndex(index)
 
     def _on_combo_changed(self, key, _index):
         combo = self._editors[key]
@@ -460,6 +519,8 @@ class ROIMetadataPanel(QWidget):
             )
             card.activated.connect(self._on_card_activated)
             card.changed.connect(self.metadata_changed.emit)
+            card.set_for_all_requested.connect(self._set_field_for_all)
+            card.set_group_for_all_requested.connect(self._set_group_for_all)
             self._cards.append(card)
             self._list_layout.addWidget(card)
 
@@ -474,6 +535,14 @@ class ROIMetadataPanel(QWidget):
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
+
+    def _set_field_for_all(self, key, value):
+        for card in self._cards:
+            card.set_field_value(key, value)
+
+    def _set_group_for_all(self, values):
+        for card in self._cards:
+            card.set_dropdown_values(values)
 
     def _on_card_activated(self, index):
         self._active_index = index
@@ -516,6 +585,14 @@ class ROIMetadataPanel(QWidget):
                 selection-background-color: {Colors.ACCENT};
                 font-size: {fs}pt;
             }}
+            QMenu {{
+                background-color: {Colors.PANEL_BACKGROUND};
+                color: {Colors.TEXT_PRIMARY};
+                border: 1px solid {Colors.PANEL_ACCENT};
+                font-size: {fs}pt;
+            }}
+            QMenu::item {{ padding: {scaled(4)}px {scaled(20)}px; }}
+            QMenu::item:selected {{ background-color: {Colors.ACCENT}; }}
         """)
         for card in self._cards:
             card._apply_scale()

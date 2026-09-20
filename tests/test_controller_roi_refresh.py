@@ -69,6 +69,27 @@ controller_module, roi_controller = _load_controller()
 
 # Editing an ROI should update only what changed and keep color cycles intact.
 class RoiRefreshTests(unittest.TestCase):
+    def test_metadata_change_reaches_every_region_in_the_selection_class(self):
+        controller = controller_module.Controller.__new__(controller_module.Controller)
+        controller._selection_names = ['red', 'green']
+        controller._current_color_names = ['red', 'green', 'red']
+        controller._current_rois_data = [
+            {'metadata': {'DISTANCE': 'nearfield'}},
+            {'metadata': {'DISTANCE': 'midfield'}},
+            {'metadata': {'DISTANCE': 'nearfield'}},
+        ]
+        metadata = {'DISTANCE': 'farfield'}
+
+        controller._on_roi_metadata_changed(0, metadata)
+
+        self.assertEqual(
+            [roi['metadata']['DISTANCE'] for roi in controller._current_rois_data],
+            ['farfield', 'midfield', 'farfield'],
+        )
+        self.assertIsNot(controller._current_rois_data[0]['metadata'], metadata)
+        self.assertIsNot(controller._current_rois_data[0]['metadata'],
+                         controller._current_rois_data[2]['metadata'])
+
     def test_geometry_change_does_not_rebuild_canvas_or_metadata(self):
         controller = controller_module.Controller.__new__(
             controller_module.Controller
