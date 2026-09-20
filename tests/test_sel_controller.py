@@ -317,6 +317,7 @@ class SingleEyeFitsTests(unittest.TestCase):
             "rgb_img": np.zeros((20, 30, 3), dtype=np.uint8),
             # Export must never inspect or apply this matrix.
             "homography_matrix": object(),
+            "base_bands": {"R0": np.zeros((20, 30))},
         })
         rois = [
             {"left_rect": (1, 2, 3, 4), "right_rect": None,
@@ -391,6 +392,7 @@ class SingleEyeFitsTests(unittest.TestCase):
         model = SimpleNamespace(sparc_load_result={
             "id": "scene",
             "rgb_img": np.zeros((20, 30, 3), dtype=np.uint8),
+            "base_bands": {"R0": np.zeros((20, 30))},
         })
         view = MagicMock()
         rois = [{
@@ -516,6 +518,7 @@ class SingleEyeFitsTests(unittest.TestCase):
             "id": "scene",
             "instrument": "ZCAM",
             "rgb_img": np.zeros((20, 30, 3), dtype=np.uint8),
+            "base_bands": {"R0": np.zeros((20, 30))},
         })
         spectra = MagicMock()
         spectra.update_roi_spectrum_dual.return_value = {"spectrum": [1.0]}
@@ -538,6 +541,200 @@ class SingleEyeFitsTests(unittest.TestCase):
         self.assertIsNone(roi["left_rect"])
         self.assertEqual(roi["right_rect"], (3, 2, 5, 4))
         self.assertEqual(roi["roi"], (3, 2, 5, 4))
+
+
+class SensorFrameFitsTests(unittest.TestCase):
+    def setUp(self):
+        self.view = MagicMock()
+        self.model = SimpleNamespace(sparc_load_result={
+            "id": "scene",
+            "instrument": "ZCAM",
+            "rgb_img": np.zeros((8, 10, 3), dtype=np.uint8),
+            "base_bands": {"R0": np.zeros((8, 10))},
+        })
+        self.spectra = MagicMock()
+        self.spectra.update_roi_spectrum_dual.return_value = {}
+        self.colors = MagicMock()
+        self.colors.resolve_name.side_effect = lambda name: name
+        self.colors.color.return_value = (255, 0, 0)
+        self.hdus = []
+        self.written_path = None
+        owner = self
+
+        class HduList(list):
+            def writeto(self, path, overwrite=False):
+                owner.hdus = list(self)
+                owner.written_path = path
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        fits_module = _module(
+            "astropy.io.fits", Header=dict,
+            PrimaryHDU=SimpleNamespace, ImageHDU=SimpleNamespace,
+            HDUList=HduList, open=lambda _path: HduList(owner.hdus),
+        )
+        modules = patch.dict(sys.modules, {
+            "astropy": _module("astropy", __path__=[]),
+            "astropy.io": _module("astropy.io", __path__=[], fits=fits_module),
+            "astropy.io.fits": fits_module,
+            "views.panels.roi_metadata": _module(
+                "views.panels.roi_metadata", metadata_fields=lambda _: (),
+            ),
+        })
+        modules.start()
+        self.addCleanup(modules.stop)
+        # Different borders expose swapped axes and missing bottom/right padding.
+        crop = patch.dict(sel_controller.rapidlooks.CROP_SETTINGS,
+                          {"crop": (2, 3, 4, 5)})
+        crop.start()
+        self.addCleanup(crop.stop)
+
+    def export(self, rois, names):
+        sel_controller.export_fits(
+            self.view, self.model, rois, names, output_path="sensor.fits",
+        )
+
+    def load(self):
+        return sel_controller.load_fits(
+            self.view, self.model, {}, self.spectra, True, self.colors,
+            fits_path="sensor.fits",
+        )
+
+    def test_export_restores_all_borders_and_preserves_per_eye_geometry(self):
+        rois = [
+            {"left_rect": (0, 0, 2, 3), "right_rect": None},
+            {"left_rect": (8, 6, 2, 2), "right_rect": (1, 2, 3, 4)},
+        ]
+        self.export(rois, ["red", "red"])
+
+        self.assertEqual(self.written_path, "sensor.fits")
+        self.assertEqual([h.header["EYE"] for h in self.hdus], ["left", "right"])
+        expected_left = np.zeros((17, 15), dtype=np.uint8)
+        expected_left[4:7, 2:4] = 1
+        expected_left[10:12, 10:12] = 1
+        expected_right = np.zeros((17, 15), dtype=np.uint8)
+        expected_right[6:10, 3:6] = 1
+        np.testing.assert_array_equal(self.hdus[0].data, expected_left)
+        np.testing.assert_array_equal(self.hdus[1].data, expected_right)
+        self.assertEqual(rois[0]["left_rect"], (0, 0, 2, 3))
+
+    def test_export_still_rejects_rois_outside_displayed_scene(self):
+        # This rectangle fits the sensor-sized mask but not the displayed image.
+        with patch.object(sel_controller.traceback, "print_exc"):
+            self.export([{"right_rect": (9, 7, 2, 2)}], ["red"])
+
+        self.assertIsNone(self.written_path)
+        self.view.show_status_message.assert_called_once_with(
+            "FITS export failed: red right-eye ROI (9, 7, 2, 2) falls "
+            "outside the 10x8 scene; export cancelled"
+        )
+
+    def test_full_size_export_import_round_trip_restores_scene_coordinates(self):
+        self.export([
+            {"left_rect": (0, 0, 2, 3), "right_rect": None},
+            {"left_rect": (8, 6, 2, 2), "right_rect": (1, 2, 3, 4)},
+        ], ["red", "red"])
+        self.view.reset_mock()
+
+        rois, _, names = self.load()
+
+        self.assertEqual(
+            [(roi["left_rect"], roi["right_rect"]) for roi in rois],
+            [(None, (1, 2, 3, 4)), ((0, 0, 2, 3), None), ((8, 6, 2, 2), None)],
+        )
+        self.assertEqual(names, ["red", "red", "red"])
+        self.assertEqual(
+            [call.args[1:3] for call in self.spectra.update_roi_spectrum_dual.call_args_list],
+            [(None, (1, 2, 3, 4)), ((0, 0, 2, 3), None), ((8, 6, 2, 2), None)],
+        )
+        self.view.show_status_message.assert_called_once_with(
+            "Loaded 3 ROI(s) from sensor.fits"
+        )
+
+    def test_legacy_masks_keep_scene_coordinates_for_both_eyes(self):
+        left = np.zeros((8, 10), dtype=np.uint8)
+        left[:3, :2] = 1
+        right = np.zeros_like(left)
+        right[6:8, 8:10] = 1
+        self.hdus = [
+            SimpleNamespace(data=left, header={"NAME": "red", "EYE": "left"}),
+            SimpleNamespace(data=right, header={"NAME": "red", "EYE": "right"}),
+        ]
+
+        rois, _, _ = self.load()
+
+        self.assertEqual(
+            [(roi["left_rect"], roi["right_rect"]) for roi in rois],
+            [(None, (8, 6, 2, 2)), ((0, 0, 2, 3), None)],
+        )
+        self.view.show_status_message.assert_called_once_with(
+            "Loaded 2 ROI(s) from sensor.fits"
+        )
+
+    def test_each_hdu_is_normalized_before_merging_same_class_masks(self):
+        full_mask = np.zeros((17, 15), dtype=np.uint8)
+        full_mask[4:7, 2:4] = 1
+        legacy_mask = np.zeros((8, 10), dtype=np.uint8)
+        legacy_mask[6:8, 8:10] = 1
+        self.hdus = [
+            SimpleNamespace(data=full_mask, header={"NAME": "red", "EYE": "right"}),
+            SimpleNamespace(data=legacy_mask, header={"NAME": "red", "EYE": "right"}),
+            SimpleNamespace(data=np.zeros_like(full_mask),
+                            header={"NAME": "red", "EYE": "left"}),
+        ]
+
+        rois, _, names = self.load()
+
+        self.assertEqual([roi["right_rect"] for roi in rois],
+                         [(0, 0, 2, 3), (8, 6, 2, 2)])
+        self.assertTrue(all(roi["left_rect"] is None for roi in rois))
+        self.assertEqual(names, ["red", "red"])
+
+    def test_pancam_round_trip_does_not_apply_zcam_borders(self):
+        self.model.sparc_load_result["instrument"] = "PCAM"
+        self.export([{"left_rect": (1, 2, 3, 4)}], ["red"])
+
+        self.assertEqual(self.hdus[0].data.shape, (8, 10))
+        rois, _, _ = self.load()
+        self.assertEqual(rois[0]["left_rect"], (1, 2, 3, 4))
+        self.assertEqual(rois[0]["roi"], (1, 2, 3, 4))
+        self.assertIsNone(rois[0]["right_rect"])
+
+    def test_sel_export_retains_existing_sensor_offsets_and_empty_eyes(self):
+        self.colors.merspect_index.return_value = 4
+        with patch.object(sel_controller, "_write_sel") as write_sel, patch.object(
+            sel_controller, "filenames_from_load_result", return_value=([], []),
+        ):
+            sel_controller.export_sel(
+                self.view, self.model, [{"left_rect": (1, 2, 3, 4)}],
+                ["red"], self.colors, output_path="unchanged.sel",
+            )
+
+        kwargs = write_sel.call_args.kwargs
+        self.assertEqual(kwargs["image_shape"], (17, 15))
+        np.testing.assert_array_equal(kwargs["final_left_rois"], [(3, 6, 3, 4)])
+        np.testing.assert_array_equal(kwargs["final_rois"], [(0, 0, 0, 0)])
+
+    def test_sel_import_retains_existing_scene_offsets_and_empty_eyes(self):
+        self.colors.name_for_merspect_index.return_value = "red"
+        with patch.object(sel_controller, "_read_sel_regions", return_value=(
+            np.array([(0, 0, 0, 0)]), np.array([(3, 6, 3, 4)]), [4],
+        )):
+            outcome = sel_controller.load_sel(
+                self.view, self.model, {}, self.spectra, True, self.colors,
+                sel_path="unchanged.sel",
+            )
+
+        roi = outcome[0][0]
+        self.assertEqual(roi["left_rect"], (1, 2, 3, 4))
+        self.assertIsNone(roi["right_rect"])
+        self.spectra.update_roi_spectrum_dual.assert_called_once_with(
+            self.model.sparc_load_result, (1, 2, 3, 4), None, {},
+        )
 
 
 # Saved previews should label each ROI in the same place and style as the UI.

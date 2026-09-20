@@ -1,4 +1,4 @@
-"""SEL file export and import."""
+"""SEL and FITS file export and import."""
 
 import traceback
 import importlib
@@ -287,7 +287,7 @@ def load_sel(view, model, instrument_config, sparc_controller, has_dual_cubes, c
 
 
 def load_fits(view, model, instrument_config, sparc_controller, has_dual_cubes, color_manager, fits_path=None):
-    """Load ROI rectangles and schema-defined metadata from an ROIStudio FITS file."""
+    """Load full-sensor or legacy scene-sized FITS masks into scene coordinates."""
     load_result = model.sparc_load_result
     if load_result is None:
         view.show_status_message("No scene loaded - cannot load FITS.")
@@ -306,24 +306,29 @@ def load_fits(view, model, instrument_config, sparc_controller, has_dual_cubes, 
 
         instrument = load_result.get('instrument', 'ZCAM').strip().upper()
         fields     = metadata_fields(instrument)
+        scene_shape = load_result['rgb_img'].shape[:2]
 
         # name -> {eye: (mask, metadata)}; ROIINDEX preserves class order.
         masks       = {}
         mask_order  = {}
-        frame_shape = None
         with astropy_fits.open(fits_path) as hdul:
             for hdu in hdul:
                 hdr = hdu.header
                 if 'NAME' not in hdr or 'EYE' not in hdr or hdu.data is None:
                     continue
-                frame_shape = hdu.data.shape
                 name = str(hdr['NAME']).strip().lower()
                 eye  = str(hdr['EYE']).strip().lower()
                 try:
                     order = int(hdr.get('ROIINDEX', len(mask_order)))
                 except (TypeError, ValueError):
                     order = len(mask_order)
-                incoming_mask = np.asarray(hdu.data) != 0
+                incoming_mask = _fits_mask_in_scene(hdu.data, load_result, instrument)
+                if incoming_mask.shape != scene_shape:
+                    view.show_status_message(
+                        f"FITS masks are {incoming_mask.shape[1]}x{incoming_mask.shape[0]} "
+                        f"but the scene is {scene_shape[1]}x{scene_shape[0]} "
+                        "- ROIs may not line up."
+                    )
                 mask_order.setdefault(name, order)
                 # An empty eye HDU means that this selection is not visible in
                 # that camera.  Do not let it participate in eye pairing: old
@@ -347,13 +352,6 @@ def load_fits(view, model, instrument_config, sparc_controller, has_dual_cubes, 
         if not masks:
             view.show_status_message(f"No ROI masks found in {fits_path}")
             return None
-
-        scene_shape = load_result['rgb_img'].shape[:2]
-        if frame_shape is not None and tuple(frame_shape) != tuple(scene_shape):
-            view.show_status_message(
-                f"FITS masks are {frame_shape[1]}x{frame_shape[0]} but the scene is "
-                f"{scene_shape[1]}x{scene_shape[0]} - ROIs may not line up."
-            )
 
         rois_data, colors, color_names = [], [], []
 
@@ -406,6 +404,19 @@ def load_fits(view, model, instrument_config, sparc_controller, has_dual_cubes, 
         view.show_status_message(f"Load FITS failed: {e}")
         traceback.print_exc()
         return None
+
+
+def _fits_mask_in_scene(data, load_result, instrument):
+    """Trim sensor-sized masks; legacy masks already use scene coordinates."""
+    mask = np.asarray(data) != 0
+    height, width = load_result['rgb_img'].shape[:2]
+    if mask.shape == (height, width):
+        return mask
+
+    col_off, row_off, full_height, full_width = _sensor_offsets(load_result, instrument)
+    if mask.shape == (full_height, full_width):
+        return mask[row_off:row_off+height, col_off:col_off+width]
+    return mask
 
 
 def _mask_rects(mask):
@@ -578,7 +589,7 @@ def export_context(view, model, rois_data, colors, color_names, color_manager,
 
 
 def export_fits(view, model, rois_data, color_names, output_path=None):
-    """Export stored geometry as one mask per class/present eye.
+    """Export sensor-sized masks for each selection class and present eye.
 
     Homography is deliberately absent here.  The saved rectangles are the
     user's final per-eye geometry, including manual split-screen adjustments
@@ -607,6 +618,7 @@ def export_fits(view, model, rois_data, color_names, output_path=None):
         instrument = load_result.get('instrument', 'ZCAM').strip().upper()
         is_zcam = instrument == 'ZCAM'
         H, W  = load_result['rgb_img'].shape[:2]
+        col_off, row_off, full_H, full_W = _sensor_offsets(load_result, instrument)
         hdus  = []
         first = True
         scene_metadata = {} if is_zcam else observation_metadata(load_result)
@@ -624,7 +636,7 @@ def export_fits(view, model, rois_data, color_names, output_path=None):
                 ]
                 if not rects:
                     continue
-                mask = np.zeros((H, W), dtype=np.uint8)
+                mask = np.zeros((full_H, full_W), dtype=np.uint8)
                 for rect in rects:
                     x, y, w, h = (int(v) for v in rect)
                     if (w <= 0 or h <= 0 or x < 0 or y < 0
@@ -633,7 +645,9 @@ def export_fits(view, model, rois_data, color_names, output_path=None):
                             f"{group['name']} {eye}-eye ROI {rect} falls outside "
                             f"the {W}x{H} scene; export cancelled"
                         )
-                    mask[y:y+h, x:x+w] = 1
+                    sensor_x = x + col_off
+                    sensor_y = y + row_off
+                    mask[sensor_y:sensor_y+h, sensor_x:sensor_x+w] = 1
 
                 hdr             = astropy_fits.Header()
                 hdr['NAME']     = group['name'].lower()
