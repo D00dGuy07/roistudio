@@ -241,6 +241,19 @@ To change the selection class of an existing rectangle, right-click it and choos
 
 Toggle **View > ROI Labels** to show or hide color name labels on each ROI.
 
+### Editing ROI Metadata Options
+
+Edit `resources/zcam_roi_metadata.json` for Mastcam-Z or
+`resources/pcam_roi_metadata.json` for Pancam, then restart ROIStudio. Both use
+the same schema, with fields displayed in the order listed:
+
+- `key` is the metadata key used in FITS headers; `label` is the editor label.
+- `options` lists dropdown values. An empty list creates a free-text field.
+- `hints` optionally maps stored values to display labels.
+- `visible_when` maps other field keys to the values that make this field visible.
+- `options_by_field` names a parent field; `options` then maps its values to
+  the available choices. List parent fields before their dependent fields.
+
 ---
 
 ## Spectral View

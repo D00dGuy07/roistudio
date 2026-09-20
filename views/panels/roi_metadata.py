@@ -1,9 +1,8 @@
 """Per-ROI metadata assignment panel.
 
-Fields are declared per instrument in MCZ_METADATA_FIELDS and
-PCAM_METADATA_FIELDS - key, label, options, and an optional visibility
-predicate based on the other values. Options can be a callable that uses the
-metadata for lists that depend on another field, like the Pancam feature subtype.
+Fields, options, and visibility rules are loaded from each instrument's
+resources/*_roi_metadata.json file. Dependent option lists are resolved using
+the ROI's other metadata values.
 """
 
 import json
@@ -35,64 +34,7 @@ class MetadataField:
         return self.options(metadata) if callable(self.options) else self.options
 
 
-def _is_rock(m): return m.get('FEATURE') == 'rock'
-def _is_soil(m): return m.get('FEATURE') == 'soil'
-
-
-_SOIL_SUBTYPES = (
-    'undisturbed regolith', 'on rock', 'wheel track compressed',
-    'wheel track disturbed', 'disturbed surface (not wheel track)',
-    'bedform crest/slope', 'on hardware',
-)
-
-_ZCAM_SUBTYPES = {
-    'rock': (
-        'bright natural surface', 'dark natural surface', 'thick dust',
-        'LIBS-cleared surface', 'gDRT-cleared surface', 'abraded surface',
-        'coating (not dust)', 'clast/inclusion', 'tailings',
-        'broken/scuffed surface',
-    ),
-    'soil': _SOIL_SUBTYPES,
-}
-
-_ZCAM_FORMATIONS = (
-    'Maaz', 'Seitah', 'delta', 'margin unit', 'Neretva Vallis',
-    'Crater Rim', 'Lac de Charmes',
-)
-
-# Only these formations have named members.
-_ZCAM_MEMBERS = {
-    'Maaz':   ('Chal', 'Nataani', 'Rochette', 'Artuby', 'Roubion'),
-    'Seitah': ('Content', 'Bastide', 'Issole'),
-}
-
-_DISTANCE = MetadataField('DISTANCE', 'Distance', ('nearfield', 'midfield', 'farfield'),
-                          hints={'nearfield': 'nearfield (< 10 m)',
-                                 'midfield':  'midfield (10 m - 50 m)',
-                                 'farfield':  'farfield (> 50 m)'})
-_DESCRIPTION = MetadataField('DESCRIPTION', 'Description')
-
-
-# Field keys, values, and gating mirror the marslab metadata settings.
-MCZ_METADATA_FIELDS = (
-    MetadataField('FEATURE', 'Feature', ('rock', 'soil', 'pebble', 'hardware', 'landscape')),
-    MetadataField('FEATURE_SUBTYPE', 'Feature subtype',
-                  lambda m: _ZCAM_SUBTYPES.get(m.get('FEATURE'), ()),
-                  visible_when=lambda m: m.get('FEATURE') in _ZCAM_SUBTYPES),
-    MetadataField('FLOAT', 'Float', ('float', 'in-place', 'unclear'), visible_when=_is_rock),
-    MetadataField('FORMATION', 'Formation', _ZCAM_FORMATIONS, visible_when=_is_rock),
-    MetadataField('GRAIN_SIZE', 'Grain size',
-                  ('fine (grains not resolvable)', 'coarse (grains resolvable)', 'mixed'),
-                  visible_when=_is_soil),
-    MetadataField('MEMBER', 'Member',
-                  lambda m: _ZCAM_MEMBERS.get(m.get('FORMATION'), ()),
-                  visible_when=lambda m: _is_rock(m) and m.get('FORMATION') in _ZCAM_MEMBERS),
-    _DISTANCE,
-    _DESCRIPTION,
-)
-
-
-# Pancam metadata is defined in resources/pcam_roi_metadata.json.
+_ZCAM_SCHEMA_FILE = 'resources/zcam_roi_metadata.json'
 _PCAM_SCHEMA_FILE = 'resources/pcam_roi_metadata.json'
 
 
@@ -109,9 +51,9 @@ def _condition(spec):
     return lambda m: all(m.get(key) in vals for key, vals in checks.items())
 
 
-def _pcam_fields_from_json(path):
-    """Load and validate the editable Pancam metadata schema."""
-    spec   = json.loads(Path(path).read_text())
+def _fields_from_json(path):
+    """Load and validate an instrument's editable metadata schema."""
+    spec   = json.loads(Path(path).read_text(encoding='utf-8'))
     fields = []
     seen   = set()
     referenced = set()
@@ -155,15 +97,16 @@ def _pcam_fields_from_json(path):
     return tuple(fields)
 
 
-def _load_pcam_fields():
+def _load_metadata_fields(schema_file):
     try:
-        return _pcam_fields_from_json(_resource_path(_PCAM_SCHEMA_FILE))
+        return _fields_from_json(_resource_path(schema_file))
     except Exception as e:
-        print(f"roi_metadata: could not load {_PCAM_SCHEMA_FILE} - {e}", file=sys.stderr)
+        print(f"roi_metadata: could not load {schema_file} - {e}", file=sys.stderr)
         return ()
 
 
-PCAM_METADATA_FIELDS = _load_pcam_fields()
+MCZ_METADATA_FIELDS = _load_metadata_fields(_ZCAM_SCHEMA_FILE)
+PCAM_METADATA_FIELDS = _load_metadata_fields(_PCAM_SCHEMA_FILE)
 
 
 _INSTRUMENT_METADATA_FIELDS = {

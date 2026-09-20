@@ -1,5 +1,7 @@
 import importlib.util
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -57,6 +59,38 @@ class SetMetadataForAllTests(unittest.TestCase):
         event = QContextMenuEvent(QContextMenuEvent.Mouse, QPoint(1, 1))
         with patch.object(roi_metadata.QMenu, 'exec_', choose_action):
             QApplication.sendEvent(widget, event)
+
+    def test_zcam_json_edits_control_options_labels_and_dependent_fields(self):
+        schema_path = Path(__file__).parents[1] / 'resources' / 'zcam_roi_metadata.json'
+        schema = json.loads(schema_path.read_text(encoding='utf-8'))
+        fields = {field['key']: field for field in schema['fields']}
+        fields['FORMATION']['options'].append('New formation')
+        fields['MEMBER']['options']['New formation'] = ['New member']
+        schema['fields'].append({
+            'key': 'CUSTOM', 'label': 'Custom field', 'options': ['sample'],
+            'hints': {'sample': 'Sample label'},
+            'visible_when': {'FEATURE': ['rock']},
+        })
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'zcam_roi_metadata.json'
+            path.write_text(json.dumps(schema), encoding='utf-8')
+            with patch.object(roi_metadata, '_resource_path', return_value=str(path)):
+                edited_fields = roi_metadata._load_metadata_fields(roi_metadata._ZCAM_SCHEMA_FILE)
+
+        with patch.dict(roi_metadata._INSTRUMENT_METADATA_FIELDS, {'ZCAM': edited_fields}):
+            self.set_metadata([{
+                'FEATURE': 'rock', 'FORMATION': 'New formation',
+                'MEMBER': 'New member', 'CUSTOM': 'sample',
+            }])
+
+        card = self.panel._cards[0]
+        self.assertEqual(card._editors['FORMATION'].currentData(), 'New formation')
+        self.assertEqual(card._editors['MEMBER'].currentData(), 'New member')
+        self.assertEqual(card._rows['CUSTOM']._label.text(), 'Custom field')
+        self.assertEqual(card._editors['CUSTOM'].currentText(), 'Sample label')
+        card.set_field_value('FEATURE', 'soil')
+        self.assertTrue(card._rows['CUSTOM'].isHidden())
+        self.assertNotIn('CUSTOM', card._metadata)
 
     def test_group_menu_copies_parents_and_children_preserving_descriptions(self):
         source = {'FEATURE': 'rock', 'FEATURE_SUBTYPE': 'abraded surface',

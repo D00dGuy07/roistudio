@@ -1,0 +1,83 @@
+{
+  "fields": [
+    {
+      "key": "FEATURE",
+      "label": "Feature",
+      "options": ["rock", "soil", "pebble", "hardware", "landscape"]
+    },
+    {
+      "key": "FEATURE_SUBTYPE",
+      "label": "Feature subtype",
+      "options_by_field": "FEATURE",
+      "options": {
+        "rock": [
+          "bright natural surface",
+          "dark natural surface",
+          "thick dust",
+          "LIBS-cleared surface",
+          "gDRT-cleared surface",
+          "abraded surface",
+          "coating (not dust)",
+          "clast/inclusion",
+          "tailings",
+          "broken/scuffed surface"
+        ],
+        "soil": [
+          "undisturbed regolith",
+          "on rock",
+          "wheel track compressed",
+          "wheel track disturbed",
+          "disturbed surface (not wheel track)",
+          "bedform crest/slope",
+          "on hardware"
+        ]
+      }
+    },
+    {
+      "key": "FLOAT",
+      "label": "Float",
+      "options": ["float", "in-place", "unclear"],
+      "visible_when": {"FEATURE": ["rock"]}
+    },
+    {
+      "key": "FORMATION",
+      "label": "Formation",
+      "options": [
+        "Maaz", "Seitah", "delta", "margin unit", "Neretva Vallis",
+        "Crater Rim", "Lac de Charmes"
+      ],
+      "visible_when": {"FEATURE": ["rock"]}
+    },
+    {
+      "key": "GRAIN_SIZE",
+      "label": "Grain size",
+      "options": ["fine (grains not resolvable)", "coarse (grains resolvable)", "mixed"],
+      "visible_when": {"FEATURE": ["soil"]}
+    },
+    {
+      "key": "MEMBER",
+      "label": "Member",
+      "options_by_field": "FORMATION",
+      "options": {
+        "Maaz": ["Chal", "Nataani", "Rochette", "Artuby", "Roubion"],
+        "Seitah": ["Content", "Bastide", "Issole"]
+      },
+      "visible_when": {"FEATURE": ["rock"]}
+    },
+    {
+      "key": "DISTANCE",
+      "label": "Distance",
+      "options": ["nearfield", "midfield", "farfield"],
+      "hints": {
+        "nearfield": "nearfield (< 10 m)",
+        "midfield": "midfield (10 m - 50 m)",
+        "farfield": "farfield (> 50 m)"
+      }
+    },
+    {
+      "key": "DESCRIPTION",
+      "label": "Description",
+      "options": []
+    }
+  ]
+}
